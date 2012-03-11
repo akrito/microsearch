@@ -121,7 +121,7 @@ class Microsearch(object):
         self.base_directory = base_directory
         self.index_path = os.path.join(self.base_directory, 'index')
         self.docs_path = os.path.join(self.base_directory, 'documents')
-        self.stats_path = os.path.join(self.base_directory, 'stats.json')
+        self.stats_path = os.path.join(self.base_directory, 'stats.msgpack')
         self.setup()
 
     def setup(self):
@@ -289,7 +289,7 @@ class Microsearch(object):
         """
         Given a ``line`` from the segment file, this returns the term & its info.
 
-        The term info is stored as serialized JSON. The default separator
+        The term info is stored as serialized MSGPACK. The default separator
         between the term & info is the ``\t`` character, which would never
         appear in a term due to the way tokenization is done.
         """
@@ -317,7 +317,7 @@ class Microsearch(object):
                 orig_info[doc_id] = positions
             else:
                 # Harder; it's there. Convert to sets, update then convert back
-                # to lists to accommodate ``json``.
+                # to lists to accommodate ``msgpack``.
                 orig_positions = set(orig_info.get(doc_id, []))
                 new_positions = set(positions)
                 orig_positions.update(new_positions)
@@ -383,15 +383,15 @@ class Microsearch(object):
 
         Returns the full filepath to the document.
         """
-        # Builds a path like ``BASE_DIR/documents/5d4140/hello.json``.
-        return os.path.join(self.docs_path, self.hash_name(doc_id), "{0}.json".format(doc_id))
+        # Builds a path like ``BASE_DIR/documents/5d4140/hello.msgpack``.
+        return os.path.join(self.docs_path, self.hash_name(doc_id), "{0}.msgpack".format(doc_id))
 
     def save_document(self, doc_id, document):
         """
         Given a ``doc_id`` string & a ``document`` dict, writes the document to
         disk.
 
-        Uses JSON as the serialization format.
+        Uses MSGPACK as the serialization format.
         """
         doc_path = self.make_document_name(doc_id)
         base_path = os.path.dirname(doc_path)
