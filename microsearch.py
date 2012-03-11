@@ -70,8 +70,9 @@ maintained in alphabetical order. They look something like::
     text\t{'document-1523': [5, 10]}\n
 
 """
+from bsddb3 import db
 import hashlib
-import json
+import msgpack
 import math
 import os
 import re
@@ -140,7 +141,10 @@ class Microsearch(object):
         if not os.path.exists(self.docs_path):
             os.makedirs(self.docs_path)
 
+        self.db = db.DB()
+        self.db.open(self.make_segment_name(''), None, db.DB_HASH, db.DB_CREATE)
         return True
+
 
     def read_stats(self):
         """
@@ -156,7 +160,7 @@ class Microsearch(object):
             }
 
         with open(self.stats_path, 'r') as stats_file:
-            return json.load(stats_file)
+            return msgpack.unpackb(stats_file.read())
 
     def write_stats(self, new_stats):
         """
@@ -171,7 +175,7 @@ class Microsearch(object):
             }
         """
         with open(self.stats_path, 'w') as stats_file:
-            json.dump(new_stats, stats_file)
+            stats_file.write(msgpack.packb(new_stats))
 
         return True
 
@@ -279,7 +283,7 @@ class Microsearch(object):
 
         Returns the full path to the segment.
         """
-        return os.path.join(self.index_path, "{0}.index".format(self.hash_name(term)))
+        return '/tmp/index.db'
 
     def parse_record(self, line):
         """
@@ -289,14 +293,14 @@ class Microsearch(object):
         between the term & info is the ``\t`` character, which would never
         appear in a term due to the way tokenization is done.
         """
-        return line.rstrip().split('\t', 1)
+        return line
 
     def make_record(self, term, term_info):
         """
         Given a ``term`` and a dict of ``term_info``, creates a line for
         writing to the segment file.
         """
-        return "{0}\t{1}\n".format(term, json.dumps(term_info, ensure_ascii=False))
+        return msgpack.packb(term_info)
 
     def update_term_info(self, orig_info, new_info):
         """
@@ -333,46 +337,21 @@ class Microsearch(object):
         determines whether the provided ``term_info`` should overwrite or
         update the data in the segment. Default is ``False`` (overwrite).
         """
-        seg_name = self.make_segment_name(term)
-        new_seg_file = tempfile.NamedTemporaryFile(delete=False)
-        written = False
 
-        if not os.path.exists(seg_name):
-            # If it doesn't exist, touch it.
-            with open(seg_name, 'w') as seg_file:
-                seg_file.write('')
-
-        with open(seg_name, 'r') as seg_file:
-            for line in seg_file:
-                seg_term, seg_term_info = self.parse_record(line)
-
-                if not written and seg_term > term:
-                    # We're at the alphabetical location & need to insert.
-                    new_line = self.make_record(term, term_info)
-                    new_seg_file.write(new_line.encode('utf-8'))
-                    written = True
-                elif seg_term == term:
-                    if not update:
-                        # Overwrite the line for the update.
-                        line = self.make_record(term, term_info)
-                    else:
-                        # Update the existing record.
-                        new_info = self.update_term_info(json.loads(seg_term_info), term_info)
-                        line = self.make_record(term, new_info)
-
-                    written = True
-
-                # Either we haven't reached it alphabetically or we're well-past.
-                # Write the line.
-                new_seg_file.write(line.encode('utf-8'))
-
-            if not written:
+        old_line = self.db.get(term)
+        if not old_line:
+            new_line = self.make_record(term, term_info)
+            self.db.put(term, new_line)
+        else:
+            if not update:
+                # Overwrite the line for the update.
                 line = self.make_record(term, term_info)
-                new_seg_file.write(line.encode('utf-8'))
-
-        # Atomically move it into place.
-        new_seg_file.close()
-        os.rename(new_seg_file.name, seg_name)
+            else:
+                # Update the existing record.
+                new_info = self.update_term_info(msgpack.unpackb(old_line), term_info)
+                line = self.make_record(term, new_info)
+    
+            self.db.put(term, line)
         return True
 
     def load_segment(self, term):
@@ -383,19 +362,9 @@ class Microsearch(object):
         If no index file exists or the term is not found, this returns an
         empty dict.
         """
-        seg_name = self.make_segment_name(term)
-
-        if not os.path.exists(seg_name):
-            return {}
-
-        with open(seg_name, 'r') as seg_file:
-            for line in seg_file:
-                seg_term, term_info = self.parse_record(line)
-
-                if seg_term == term:
-                    # Found it.
-                    return json.loads(term_info)
-
+        term_info = self.db.get(term)
+        if term_info:
+            return msgpack.unpackb(term_info)
         return {}
 
 
@@ -431,7 +400,7 @@ class Microsearch(object):
             os.makedirs(base_path)
 
         with open(doc_path, 'w') as doc_file:
-            doc_file.write(json.dumps(document, ensure_ascii=False))
+            doc_file.write(msgpack.packb(document))
 
         return True
 
@@ -446,7 +415,7 @@ class Microsearch(object):
         doc_path = self.make_document_name(doc_id)
 
         with open(doc_path, 'r') as doc_file:
-            data = json.loads(doc_file.read())
+            data = msgpack.unpackb(doc_file.read())
 
         return data
 
