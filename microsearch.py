@@ -152,7 +152,7 @@ class Microsearch(object):
             }
 
         with open(self.stats_path, 'r') as stats_file:
-            return msgpack.unpackb(stats_file.read())
+            return self.unpack(stats_file.read())
 
     def write_stats(self, new_stats):
         """
@@ -167,7 +167,7 @@ class Microsearch(object):
             }
         """
         with open(self.stats_path, 'w') as stats_file:
-            stats_file.write(msgpack.packb(new_stats))
+            stats_file.write(self.pack(new_stats))
 
         return True
 
@@ -190,6 +190,15 @@ class Microsearch(object):
         current_stats = self.read_stats()
         return int(current_stats.get('total_docs', 0))
 
+    # =====================
+    # Packing and Unpacking
+    # =====================
+
+    def pack(self, data):
+        return msgpack.packb(data)
+
+    def unpack(self, data):
+        return msgpack.unpackb(data)
 
     # ==============================
     # Tokenization & Term Generation
@@ -285,15 +294,15 @@ class Microsearch(object):
 
         old_line = self.db.get(term)
         if not old_line:
-            line = msgpack.packb(term_info)
+            line = self.pack(term_info)
         else:
             if not update:
                 # Overwrite the line for the update.
-                line = msgpack.packb(term_info)
+                line = self.pack(term_info)
             else:
                 # Update the existing record.
-                new_info = self.update_term_info(msgpack.unpackb(old_line), term_info)
-                line = msgpack.packb(new_info)
+                new_info = self.update_term_info(self.unpack(old_line), term_info)
+                line = self.pack(new_info)
     
         self.db.put(term, line)
         return True
@@ -308,7 +317,7 @@ class Microsearch(object):
         """
         term_info = self.db.get(term)
         if term_info:
-            return msgpack.unpackb(term_info)
+            return self.unpack(term_info)
         return {}
 
 
@@ -323,7 +332,7 @@ class Microsearch(object):
 
         Uses MSGPACK as the serialization format.
         """
-        self.docs_db.put(doc_id, msgpack.packb(document))
+        self.docs_db.put(doc_id, self.pack(document))
         return True
 
     def load_document(self, doc_id):
@@ -334,7 +343,7 @@ class Microsearch(object):
 
         Returns the document data as a dict.
         """
-        data = msgpack.unpackb(self.docs_db.get(doc_id))
+        data = self.unpack(self.docs_db.get(doc_id))
         return data
 
     def index(self, doc_id, document):
