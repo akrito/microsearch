@@ -4,7 +4,9 @@ microsearch
 
 A small search library.
 
-Primarily intended to be a learning tool to teach the fundamentals of search.
+Primarily intended to be a learning tool to teach the fundamentals of search. Or
+that's what Daniel intended. I just want something small and quick that I can
+wrap my head around.
 
 
 Usage
@@ -45,7 +47,7 @@ Documents are dictionaries & look like::
 The Index
 ---------
 
-The (inverted) index itself (represented by the segment file bits), is also
+The (inverted) index itself (represented by the index file), is also
 essentially a dictionary. The difference is that the index is term-based, unlike
 the field-based nature of the document::
 
@@ -61,25 +63,19 @@ the field-based nature of the document::
         ...
     }
 
-For this library, on disk, this is represented by a large number of small
-segment files. You hash the term in question & take the first 6 chars of the
-hash to determine what segment file it should be in. Those files are
-maintained in alphabetical order. They look something like::
-
-    blob\t{'document-1523': [3]}\n
-    text\t{'document-1523': [5, 10]}\n
+For this library, on disk, this is represented by a Berkeley DB.
 
 """
 from bsddb3 import db
 import hashlib
-import msgpack
 import math
+import msgpack
 import os
 import re
 import tempfile
 
 
-__author__ = 'Daniel Lindsley'
+__author__ = 'Daniel Lindsley, Alex Kritikos'
 __license__ = 'BSD'
 __version__ = (1, 0, 0)
 
@@ -119,8 +115,8 @@ class Microsearch(object):
 
         """
         self.base_directory = base_directory
-        self.index_path = os.path.join(self.base_directory, 'index')
-        self.docs_path = os.path.join(self.base_directory, 'documents')
+        self.index_path = os.path.join(self.base_directory, 'index.db')
+        self.docs_path = os.path.join(self.base_directory, 'documents.db')
         self.stats_path = os.path.join(self.base_directory, 'stats.msgpack')
         self.setup()
 
@@ -135,14 +131,10 @@ class Microsearch(object):
         if not os.path.exists(self.base_directory):
             os.makedirs(self.base_directory)
 
-        if not os.path.exists(self.index_path):
-            os.makedirs(self.index_path)
-
-        if not os.path.exists(self.docs_path):
-            os.makedirs(self.docs_path)
-
         self.db = db.DB()
-        self.db.open(self.make_segment_name(''), None, db.DB_HASH, db.DB_CREATE)
+        self.db.open(self.index_path, None, db.DB_HASH, db.DB_CREATE)
+        self.docs_db = db.DB()
+        self.docs_db.open(self.docs_path, None, db.DB_HASH, db.DB_CREATE)
         return True
 
 
@@ -255,59 +247,16 @@ class Microsearch(object):
         return terms
 
 
-    # ================
-    # Segment Handling
-    # ================
-
-    def hash_name(self, term, length=6):
-        """
-        Given a ``term``, hashes it & returns a string of the first N letters.
-
-        Optionally accepts a ``length`` parameter, which takes an integer &
-        controls how much of the hash is returned. Default is ``6``.
-
-        This is usefully when writing files to the file system, as it helps
-        us keep from putting too many files in a given directory (~32K max
-        with the default).
-        """
-        # Make sure it's ASCII to appease the hashlib gods.
-        term = term.encode('ascii', errors='ignore')
-        # We hash & slice the term to get a small-ish number of fields
-        # and good distribution between them.
-        hashed = hashlib.md5(term).hexdigest()
-        return hashed[:length]
-
-    def make_segment_name(self, term):
-        """
-        Given a ``term``, creates a segment filename based on the hash of the term.
-
-        Returns the full path to the segment.
-        """
-        return '/tmp/index.db'
-
-    def parse_record(self, line):
-        """
-        Given a ``line`` from the segment file, this returns the term & its info.
-
-        The term info is stored as serialized MSGPACK. The default separator
-        between the term & info is the ``\t`` character, which would never
-        appear in a term due to the way tokenization is done.
-        """
-        return line
-
-    def make_record(self, term, term_info):
-        """
-        Given a ``term`` and a dict of ``term_info``, creates a line for
-        writing to the segment file.
-        """
-        return msgpack.packb(term_info)
+    # ==============
+    # Index Handling
+    # ==============
 
     def update_term_info(self, orig_info, new_info):
         """
         Takes existing ``orig_info`` & ``new_info`` dicts & combines them
         intelligently.
 
-        Used for updating term_info within the segments.
+        Used for updating term_info within the index.
         """
         # Updates are (sadly) not as simple as ``dict.update()``.
         # Iterate through the keys (documents) & manually update.
@@ -325,36 +274,31 @@ class Microsearch(object):
 
         return orig_info
 
-    def save_segment(self, term, term_info, update=False):
+    def save_term(self, term, term_info, update=False):
         """
         Writes out new index data to disk.
 
-        Takes a ``term`` string & ``term_info`` dict. It will
-        rewrite the segment in alphabetical order, adding in the data
-        where appropriate.
-
         Optionally takes an ``update`` parameter, which is a boolean &
         determines whether the provided ``term_info`` should overwrite or
-        update the data in the segment. Default is ``False`` (overwrite).
+        update the data in the index. Default is ``False`` (overwrite).
         """
 
         old_line = self.db.get(term)
         if not old_line:
-            new_line = self.make_record(term, term_info)
-            self.db.put(term, new_line)
+            line = msgpack.packb(term_info)
         else:
             if not update:
                 # Overwrite the line for the update.
-                line = self.make_record(term, term_info)
+                line = msgpack.packb(term_info)
             else:
                 # Update the existing record.
                 new_info = self.update_term_info(msgpack.unpackb(old_line), term_info)
-                line = self.make_record(term, new_info)
+                line = msgpack.packb(new_info)
     
-            self.db.put(term, line)
+        self.db.put(term, line)
         return True
 
-    def load_segment(self, term):
+    def load_term(self, term):
         """
         Given a ``term``, this will return the ``term_info`` associated with
         the ``term``.
@@ -372,20 +316,6 @@ class Microsearch(object):
     # Document Handling
     # =================
 
-    def make_document_name(self, doc_id):
-        """
-        Given a ``doc_id``, this constructs a path where the document should
-        be stored.
-
-        It uses a similar hashing mechanism as ``make_segment_name``, using
-        the hash fragment to control the directory structure instead of the
-        filename.
-
-        Returns the full filepath to the document.
-        """
-        # Builds a path like ``BASE_DIR/documents/5d4140/hello.msgpack``.
-        return os.path.join(self.docs_path, self.hash_name(doc_id), "{0}.msgpack".format(doc_id))
-
     def save_document(self, doc_id, document):
         """
         Given a ``doc_id`` string & a ``document`` dict, writes the document to
@@ -393,15 +323,7 @@ class Microsearch(object):
 
         Uses MSGPACK as the serialization format.
         """
-        doc_path = self.make_document_name(doc_id)
-        base_path = os.path.dirname(doc_path)
-
-        if not os.path.exists(base_path):
-            os.makedirs(base_path)
-
-        with open(doc_path, 'w') as doc_file:
-            doc_file.write(msgpack.packb(document))
-
+        self.docs_db.put(doc_id, msgpack.packb(document))
         return True
 
     def load_document(self, doc_id):
@@ -412,13 +334,8 @@ class Microsearch(object):
 
         Returns the document data as a dict.
         """
-        doc_path = self.make_document_name(doc_id)
-
-        with open(doc_path, 'r') as doc_file:
-            data = msgpack.unpackb(doc_file.read())
-
+        data = msgpack.unpackb(self.docs_db.get(doc_id))
         return data
-
 
     def index(self, doc_id, document):
         """
@@ -447,7 +364,7 @@ class Microsearch(object):
         terms = self.make_ngrams(tokens)
 
         for term, positions in terms.items():
-            self.save_segment(term, {doc_id: positions}, update=True)
+            self.save_term(term, {doc_id: positions}, update=True)
 
         self.increment_total_docs()
         return True
@@ -506,7 +423,7 @@ class Microsearch(object):
         per_doc_counts = {}
 
         for term in terms:
-            term_matches = self.load_segment(term)
+            term_matches = self.load_term(term)
 
             per_term_docs.setdefault(term, 0)
             per_term_docs[term] += len(term_matches.keys())
